@@ -120,3 +120,55 @@ class DICOMProcessor:
         else:
             self.slice_thickness = self.slices[0].SliceThickness
     
+    def get_pixels_hu(self, slices: Optional[List[pydicom.FileDataset]] = None) -> np.ndarray:
+        """
+        Convert DICOM pixel values to Hounsfield Units (HU).
+        
+        Formula: HU = pixel_value × slope + intercept
+        
+        Args:
+            slices: List of DICOM slices (uses self.slices if None)
+            
+        Returns:
+            3D numpy array in Hounsfield Units
+            
+        Example:
+            >>> hu_array = processor.get_pixels_hu()
+            >>> print(f"HU range: {hu_array.min()} to {hu_array.max()}")
+        """
+        if slices is None:
+            slices = self.slices
+        
+        if slices is None:
+            raise ValueError("No DICOM slices loaded. Call load_scan() first.")
+        
+        if self.verbose:
+            print("Converting to Hounsfield Units...")
+        
+        # Stack all slices into 3D array
+        image = np.stack([s.pixel_array for s in slices])
+        image = image.astype(np.int16)
+        
+        # Fix common issue: air stored as -2000
+        image[image == -2000] = 0
+        
+        # Get rescale parameters from DICOM header
+        intercept = slices[0].RescaleIntercept
+        slope = slices[0].RescaleSlope
+        
+        if self.verbose:
+            print(f"  Rescale slope: {slope}")
+            print(f"  Rescale intercept: {intercept}")
+        
+        # Apply rescale formula
+        if slope != 1:
+            image = slope * image.astype(np.float64)
+            image = image.astype(np.int16)
+        
+        image += np.int16(intercept)
+        
+        if self.verbose:
+            print(f"✓ Converted to HU. Range: [{image.min()}, {image.max()}]")
+        
+        return np.array(image, dtype=np.int16)
+    
