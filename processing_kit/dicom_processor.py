@@ -290,3 +290,183 @@ class DICOMProcessor:
         
         return windowed
     
+    def normalize_and_clip(
+        self, 
+        image: np.ndarray, 
+        min_hu: float = -1000, 
+        max_hu: float = 400
+    ) -> np.ndarray:
+        """
+        Clip HU range and normalize to [0, 1].
+        
+        Args:
+            image: 3D array in Hounsfield Units
+            min_hu: Minimum HU value to keep
+            max_hu: Maximum HU value to keep
+            
+        Returns:
+            Clipped and normalized array
+            
+        Example:
+            >>> normalized = processor.normalize_and_clip(hu_array, 
+            ...                                           min_hu=-1000, 
+            ...                                           max_hu=400)
+        """
+        return self.apply_window(image, {'min': min_hu, 'max': max_hu})
+    
+    def save_as_nifti(
+        self, 
+        image: np.ndarray, 
+        output_path: str,
+        affine: Optional[np.ndarray] = None
+    ):
+        """
+        Save processed volume as NIfTI file.
+        
+        Args:
+            image: 3D numpy array
+            output_path: Output file path (.nii or .nii.gz)
+            affine: 4×4 affine matrix (creates identity if None)
+            
+        Example:
+            >>> processor.save_as_nifti(processed_volume, 'output.nii.gz')
+        """
+        if affine is None:
+            # Create identity affine with proper spacing
+            affine = np.eye(4)
+            if self.pixel_spacing is not None:
+                affine[0, 0] = self.pixel_spacing[0]
+                affine[1, 1] = self.pixel_spacing[1]
+                affine[2, 2] = self.slice_thickness
+        
+        # Create NIfTI image
+        nifti_img = nib.Nifti1Image(image, affine)
+        
+        # Save
+        nib.save(nifti_img, output_path)
+        
+        if self.verbose:
+            print(f"✓ Saved NIfTI: {output_path}")
+    
+    def get_metadata(self) -> dict:
+        """
+        Extract metadata from loaded DICOM series.
+        
+        Returns:
+            Dictionary with DICOM metadata
+            
+        Example:
+            >>> metadata = processor.get_metadata()
+            >>> print(metadata['patient_name'])
+        """
+        if not self.slices:
+            raise ValueError("No DICOM slices loaded")
+        
+        ds = self.slices[0]
+        
+        metadata = {
+            'patient_name': str(ds.PatientName) if hasattr(ds, 'PatientName') else 'Unknown',
+            'patient_id': str(ds.PatientID) if hasattr(ds, 'PatientID') else 'Unknown',
+            'study_date': str(ds.StudyDate) if hasattr(ds, 'StudyDate') else 'Unknown',
+            'modality': str(ds.Modality),
+            'manufacturer': str(ds.Manufacturer) if hasattr(ds, 'Manufacturer') else 'Unknown',
+            'num_slices': len(self.slices),
+            'pixel_spacing': self.pixel_spacing.tolist() if self.pixel_spacing is not None else None,
+            'slice_thickness': float(self.slice_thickness) if self.slice_thickness else None,
+            'image_shape': self.slices[0].pixel_array.shape,
+        }
+        
+        return metadata
+    
+    def process_folder(
+        self, 
+        input_path: str, 
+        output_path: str,
+        new_spacing: List[float] = [1.0, 1.0, 1.0],
+        window: str = 'soft_tissue',
+        save_format: str = 'nifti'
+    ) -> dict:
+        """
+        Complete pipeline: load, process, and save DICOM series.
+        
+        Args:
+            input_path: Input DICOM folder
+            output_path: Output file path
+            new_spacing: Target spacing in mm
+            window: Window preset name
+            save_format: 'nifti' or 'numpy'
+            
+        Returns:
+            Dictionary with processing results
+            
+        Example:
+            >>> result = processor.process_folder(
+            ...     './patient_001/',
+            ...     './output/patient_001.nii.gz',
+            ...     new_spacing=[1, 1, 1],
+            ...     window='lung'
+            ... )
+        """
+        # Load
+        slices = self.load_scan(input_path)
+        
+        # Convert to HU
+        hu_array = self.get_pixels_hu(slices)
+        
+        # Resample
+        resampled = self.resample(hu_array, slices, new_spacing=new_spacing)
+        
+        # Apply windowing
+        processed = self.apply_window(resampled, window=window)
+        
+        # Save
+        if save_format == 'nifti':
+            self.save_as_nifti(processed, output_path)
+        elif save_format == 'numpy':
+            np.save(output_path, processed)
+            if self.verbose:
+                print(f"✓ Saved NumPy: {output_path}")
+        else:
+            raise ValueError(f"Unknown save format: {save_format}")
+        
+        return {
+            'original_shape': hu_array.shape,
+            'processed_shape': processed.shape,
+            'output_path': output_path,
+            'metadata': self.get_metadata()
+        }
+
+
+# Convenience function for quick processing
+def process_dicom_folder(
+    input_path: str,
+    output_path: str,
+    new_spacing: List[float] = [1.0, 1.0, 1.0],
+    window: str = 'soft_tissue',
+    verbose: bool = True
+) -> np.ndarray:
+    """
+    Quick DICOM processing with default settings.
+    
+    Args:
+        input_path: DICOM folder path
+        output_path: Output NIfTI path
+        new_spacing: Target spacing [Z, X, Y] in mm
+        window: Window preset
+        verbose: Print progress
+        
+    Returns:
+        Processed 3D numpy array
+        
+    Example:
+        >>> from medimagekit.dicom_processor import process_dicom_folder
+        >>> volume = process_dicom_folder('./ct_scan/', './output.nii.gz')
+    """
+    processor = DICOMProcessor(verbose=verbose)
+    processor.process_folder(input_path, output_path, new_spacing, window)
+    
+    # Return processed array
+    slices = processor.slices
+    hu = processor.get_pixels_hu(slices)
+    resampled = processor.resample(hu, slices, new_spacing)
+    return processor.apply_window(resampled, window)
