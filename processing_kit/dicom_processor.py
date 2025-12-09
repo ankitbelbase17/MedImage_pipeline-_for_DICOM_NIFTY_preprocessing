@@ -103,3 +103,20 @@ class DICOMProcessor:
         
         return slices
     
+    def _extract_spacing(self):
+        """Extract pixel spacing and slice thickness from DICOM metadata."""
+        if not self.slices:
+            return
+        
+        # Get pixel spacing (X, Y)
+        self.pixel_spacing = np.array(self.slices[0].PixelSpacing, dtype=np.float32)
+        
+        # Calculate slice thickness (Z)
+        if len(self.slices) > 1:
+            self.slice_thickness = np.abs(
+                self.slices[1].ImagePositionPatient[2] - 
+                self.slices[0].ImagePositionPatient[2]
+            )
+        else:
+            self.slice_thickness = self.slices[0].SliceThickness
+    
