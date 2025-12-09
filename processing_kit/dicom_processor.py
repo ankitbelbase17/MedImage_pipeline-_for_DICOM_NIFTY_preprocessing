@@ -124,7 +124,7 @@ class DICOMProcessor:
         """
         Convert DICOM pixel values to Hounsfield Units (HU).
         
-        Formula: HU = pixel_value × slope + intercept
+        Formula: HU = pixel_value x slope + intercept
         
         Args:
             slices: List of DICOM slices (uses self.slices if None)
@@ -171,4 +171,122 @@ class DICOMProcessor:
             print(f"✓ Converted to HU. Range: [{image.min()}, {image.max()}]")
         
         return np.array(image, dtype=np.int16)
+    
+    def resample(
+        self, 
+        image: np.ndarray, 
+        scan: Optional[List[pydicom.FileDataset]] = None,
+        new_spacing: List[float] = [1.0, 1.0, 1.0],
+        order: int = 1
+    ) -> np.ndarray:
+        """
+        Resample image to isotropic spacing.
+        
+        This is crucial for accurate 3D reconstruction and measurements.
+        
+        Args:
+            image: 3D numpy array
+            scan: DICOM slices (uses self.slices if None)
+            new_spacing: Target spacing in mm [Z, X, Y]
+            order: Interpolation order (0=nearest, 1=linear, 3=cubic)
+            
+        Returns:
+            Resampled 3D numpy array
+            
+        Example:
+            >>> # Resample to 1mm isotropic
+            >>> resampled = processor.resample(hu_array, new_spacing=[1, 1, 1])
+            >>> # Resample to 0.5mm (higher resolution)
+            >>> high_res = processor.resample(hu_array, new_spacing=[0.5, 0.5, 0.5])
+        """
+        if scan is None:
+            scan = self.slices
+        
+        if scan is None:
+            raise ValueError("No DICOM slices available. Provide scan parameter.")
+        
+        if self.verbose:
+            print(f"Resampling to {new_spacing} mm spacing...")
+        
+        # Get current spacing
+        spacing = np.array([
+            self.slice_thickness,
+            self.pixel_spacing[0],
+            self.pixel_spacing[1]
+        ], dtype=np.float32)
+        
+        # Calculate resize factor
+        resize_factor = spacing / new_spacing
+        new_real_shape = image.shape * resize_factor
+        new_shape = np.round(new_real_shape)
+        real_resize_factor = new_shape / image.shape
+        
+        if self.verbose:
+            print(f"  Original shape: {image.shape}")
+            print(f"  Target shape: {tuple(new_shape.astype(int))}")
+            print(f"  Resize factor: {real_resize_factor}")
+        
+        # Perform resampling using spline interpolation
+        new_image = ndimage.zoom(image, real_resize_factor, order=order)
+        
+        if self.verbose:
+            print(f"✓ Resampled. New shape: {new_image.shape}")
+        
+        return new_image
+    
+    def apply_window(
+        self, 
+        image: np.ndarray, 
+        window: Union[str, dict] = 'soft_tissue'
+    ) -> np.ndarray:
+        """
+        Apply windowing (contrast adjustment) for specific tissue visualization.
+        
+        Args:
+            image: 3D array in Hounsfield Units
+            window: Either preset name or dict with 'min' and 'max' keys
+            
+        Returns:
+            Windowed and normalized array [0, 1]
+            
+        Available presets:
+            - 'lung': [-1000, 400]
+            - 'soft_tissue': [-160, 240]
+            - 'bone': [400, 1800]
+            - 'brain': [0, 80]
+            - 'liver': [-150, 250]
+            - 'mediastinum': [-175, 275]
+            
+        Example:
+            >>> # Use preset
+            >>> lung_view = processor.apply_window(hu_array, 'lung')
+            >>> # Custom window
+            >>> custom_view = processor.apply_window(hu_array, {'min': -500, 'max': 500})
+        """
+        if isinstance(window, str):
+            if window not in self.WINDOW_PRESETS:
+                raise ValueError(
+                    f"Unknown window preset: {window}. "
+                    f"Available: {list(self.WINDOW_PRESETS.keys())}"
+                )
+            window_params = self.WINDOW_PRESETS[window]
+        else:
+            window_params = window
+        
+        min_hu = window_params['min']
+        max_hu = window_params['max']
+        
+        if self.verbose:
+            print(f"Applying window: [{min_hu}, {max_hu}] HU")
+        
+        # Clip values
+        windowed = np.clip(image, min_hu, max_hu)
+        
+        # Normalize to [0, 1]
+        windowed = (windowed - min_hu) / (max_hu - min_hu)
+        
+        if self.verbose:
+            print(f"✓ Applied windowing. Range: [{windowed.min():.3f}, {windowed.max():.3f}]")
+        
+        return windowed
     
